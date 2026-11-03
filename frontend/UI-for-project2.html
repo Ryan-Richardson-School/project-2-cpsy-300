@@ -7,6 +7,8 @@
     <title>Nutritional Insights</title>
     <!-- Tailwind CSS CDN -->
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.0.0/dist/tailwind.min.css" rel="stylesheet">
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 </head>
 
 <body class="bg-gray-100">
@@ -18,29 +20,59 @@
     <main class="container mx-auto p-6">
         <section class="mb-8">
             <h2 class="text-2xl font-semibold mb-4">Explore Nutritional Insights</h2>
+
+            <!-- Metadata strip: populated after data loads -->
+            <div id="metaBar" class="hidden grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                <div class="bg-white p-3 shadow rounded-lg text-center">
+                    <p class="text-xs text-gray-500 uppercase">Recipes Processed</p>
+                    <p id="metaTotalRecipes" class="text-xl font-semibold text-blue-600">-</p>
+                </div>
+                <div class="bg-white p-3 shadow rounded-lg text-center">
+                    <p class="text-xs text-gray-500 uppercase">Highest Protein Diet</p>
+                    <p id="metaHighestProtein" class="text-xl font-semibold text-blue-600">-</p>
+                </div>
+                <div class="bg-white p-3 shadow rounded-lg text-center">
+                    <p class="text-xs text-gray-500 uppercase">Execution Time</p>
+                    <p id="metaExecutionTime" class="text-xl font-semibold text-blue-600">-</p>
+                </div>
+                <div class="bg-white p-3 shadow rounded-lg text-center">
+                    <p class="text-xs text-gray-500 uppercase">Last Refreshed</p>
+                    <p id="metaLastRefreshed" class="text-xl font-semibold text-blue-600">-</p>
+                </div>
+            </div>
+
+            <!-- Loading / error status -->
+            <p id="dashboardStatus" class="text-sm text-gray-600 mb-4">Loading dashboard data...</p>
+
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <div class="bg-white p-4 shadow-lg rounded-lg">
                     <h3 class="font-semibold">Bar Chart</h3>
                     <p class="text-sm text-gray-600">Average macronutrient content by diet type.</p>
-                    <canvas id="barChart" class="w-full h-48"></canvas>
+                    <div class="relative w-full h-64">
+                        <canvas id="barChart"></canvas>
+                    </div>
                 </div>
 
                 <div class="bg-white p-4 shadow-lg rounded-lg">
                     <h3 class="font-semibold">Scatter Plot</h3>
-                    <p class="text-sm text-gray-600">Nutrient relationships (e.g., protein vs carbs).</p>
-                    <canvas id="scatterPlot" class="w-full h-48"></canvas>
+                    <p class="text-sm text-gray-600">Top 5 protein-rich recipes: Cuisine Type vs Protein(g), colored by Diet Type.</p>
+                    <div class="relative w-full h-64">
+                        <canvas id="scatterPlot"></canvas>
+                    </div>
                 </div>
 
                 <div class="bg-white p-4 shadow-lg rounded-lg">
                     <h3 class="font-semibold">Heatmap</h3>
-                    <p class="text-sm text-gray-600">Nutrient correlations.</p>
-                    <div id="heatmap" class="w-full h-48"></div>
+                    <p class="text-sm text-gray-600">Average macronutrient intensity by diet type.</p>
+                    <div id="heatmap" class="w-full h-64 overflow-auto"></div>
                 </div>
 
                 <div class="bg-white p-4 shadow-lg rounded-lg">
                     <h3 class="font-semibold">Pie Chart</h3>
                     <p class="text-sm text-gray-600">Recipe distribution by diet type.</p>
-                    <canvas id="pieChart" class="w-full h-48"></canvas>
+                    <div class="relative w-full h-64">
+                        <canvas id="pieChart"></canvas>
+                    </div>
                 </div>
             </div>
         </section>
@@ -62,8 +94,8 @@
             <h2 class="text-2xl font-semibold mb-4">API Data Interaction</h2>
             <div class="flex flex-wrap gap-4">
                 <button id="btnInsights"
-                    class="bg-blue-600 text-white py-2 px-4 rounded hover:bg-blue-700 font-medium">Get Nutritional
-                    Insights</button>
+                    class="bg-blue-600 text-white py-2 px-4 rounded hover:bg-blue-700 font-medium">Refresh
+                    Dashboard Data</button>
                 <button class="bg-green-600 text-white py-2 px-4 rounded">Get Recipes</button>
                 <button class="bg-purple-600 text-white py-2 px-4 rounded">Get Clusters</button>
             </div>
@@ -91,30 +123,179 @@
         <p>&copy; 2025 Nutritional Insights. All Rights Reserved.</p>
     </footer>
 
-    <!-- Minimal Connection Test Script -->
+    <!-- Dashboard Data + Chart Rendering Script -->
     <script>
         const API_URL = "https://project2functionappcpsy200-eefqf8ebhhc0bdgt.canadacentral-01.azurewebsites.net/api/nutrition";
 
-        document.getElementById("btnInsights").addEventListener("click", async () => {
+        // Consistent color per diet type across all charts
+        const PALETTE = ["#2563eb", "#16a34a", "#dc2626", "#d97706", "#7c3aed", "#0891b2", "#db2777"];
+        const dietColors = {};
+        function colorForDiet(dietType) {
+            if (!(dietType in dietColors)) {
+                dietColors[dietType] = PALETTE[Object.keys(dietColors).length % PALETTE.length];
+            }
+            return dietColors[dietType];
+        }
+
+        let barChartInstance = null;
+        let scatterChartInstance = null;
+        let pieChartInstance = null;
+
+        // Bar chart: average macronutrients (Protein/Carbs/Fat) per diet type
+        function renderBarChart(avgMacros) {
+            const ctx = document.getElementById("barChart").getContext("2d");
+            const labels = avgMacros.map(d => d.Diet_type);
+
+            if (barChartInstance) barChartInstance.destroy();
+            barChartInstance = new Chart(ctx, {
+                type: "bar",
+                data: {
+                    labels,
+                    datasets: [
+                        { label: "Protein (g)", data: avgMacros.map(d => d["Protein(g)"]), backgroundColor: "#2563eb" },
+                        { label: "Carbs (g)", data: avgMacros.map(d => d["Carbs(g)"]), backgroundColor: "#16a34a" },
+                        { label: "Fat (g)", data: avgMacros.map(d => d["Fat(g)"]), backgroundColor: "#d97706" }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { position: "bottom" } },
+                    scales: { y: { beginAtZero: true, title: { display: true, text: "grams" } } }
+                }
+            });
+        }
+
+        // Scatter plot: Cuisine_type (x) vs Protein(g) (y), one dataset per Diet_type (hue),
+        // mirroring the original sns.scatterplot(data=top_protein, x='Cuisine_type', y='Protein(g)', hue='Diet_type')
+        function renderScatterChart(topProteinRecipes) {
+            const ctx = document.getElementById("scatterPlot").getContext("2d");
+
+            const byDiet = {};
+            topProteinRecipes.forEach(r => {
+                if (!byDiet[r.Diet_type]) byDiet[r.Diet_type] = [];
+                byDiet[r.Diet_type].push({ x: r.Cuisine_type, y: r["Protein(g)"] });
+            });
+
+            const datasets = Object.keys(byDiet).map(dietType => ({
+                label: dietType,
+                data: byDiet[dietType],
+                backgroundColor: colorForDiet(dietType),
+                pointRadius: 6,
+                pointHoverRadius: 8
+            }));
+
+            if (scatterChartInstance) scatterChartInstance.destroy();
+            scatterChartInstance = new Chart(ctx, {
+                type: "scatter",
+                data: { datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { position: "bottom" } },
+                    scales: {
+                        x: { type: "category", title: { display: true, text: "Cuisine Type" }, ticks: { autoSkip: false } },
+                        y: { title: { display: true, text: "Protein (g)" } }
+                    }
+                }
+            });
+        }
+
+        // Pie chart: share of recipes per diet type
+        function renderPieChart(dietDistribution) {
+            const ctx = document.getElementById("pieChart").getContext("2d");
+            const labels = Object.keys(dietDistribution);
+            const data = Object.values(dietDistribution);
+
+            if (pieChartInstance) pieChartInstance.destroy();
+            pieChartInstance = new Chart(ctx, {
+                type: "pie",
+                data: {
+                    labels,
+                    datasets: [{ data, backgroundColor: labels.map(colorForDiet) }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { position: "bottom" } }
+                }
+            });
+        }
+
+        // Heatmap: average macronutrient intensity grid, mirroring sns.heatmap(avg_macros, annot=True)
+        function renderHeatmap(avgMacros) {
+            const container = document.getElementById("heatmap");
+            const macroKeys = ["Protein(g)", "Carbs(g)", "Fat(g)"];
+            const maxByMacro = {};
+            macroKeys.forEach(k => {
+                maxByMacro[k] = Math.max(...avgMacros.map(d => d[k]));
+            });
+
+            let html = '<table class="w-full text-xs text-center border-collapse">';
+            html += '<thead><tr><th class="p-1 text-left">Diet Type</th>' +
+                macroKeys.map(k => `<th class="p-1">${k}</th>`).join('') + '</tr></thead><tbody>';
+
+            avgMacros.forEach(d => {
+                html += `<tr><td class="p-1 text-left font-medium">${d.Diet_type}</td>`;
+                macroKeys.forEach(k => {
+                    const ratio = maxByMacro[k] ? d[k] / maxByMacro[k] : 0;
+                    const alpha = (0.15 + ratio * 0.7).toFixed(2);
+                    html += `<td class="p-1" style="background-color: rgba(37, 99, 235, ${alpha}); color: ${ratio > 0.55 ? 'white' : 'black'}">${d[k]}</td>`;
+                });
+                html += '</tr>';
+            });
+
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        function updateMetaBar(data) {
+            document.getElementById("metaBar").classList.remove("hidden");
+            document.getElementById("metaTotalRecipes").textContent = data.total_recipes_processed ?? "-";
+            document.getElementById("metaHighestProtein").textContent = data.highest_protein_diet ?? "-";
+            document.getElementById("metaExecutionTime").textContent = (data.execution_time_seconds ?? "-") + "s";
+            document.getElementById("metaLastRefreshed").textContent = new Date().toLocaleTimeString();
+        }
+
+        async function loadDashboard() {
+            const status = document.getElementById("dashboardStatus");
             const container = document.getElementById("outputContainer");
             const output = document.getElementById("apiOutput");
 
-            container.classList.remove("hidden");
-            output.textContent = "Connecting to Azure Function at:\n" + API_URL + "\n\nWaiting for response...";
+            status.textContent = "Loading dashboard data...";
+            status.classList.remove("hidden", "text-red-600");
+            status.classList.add("text-gray-600");
 
             try {
                 const response = await fetch(API_URL);
                 if (!response.ok) {
                     const errorText = await response.text();
-                    output.textContent = "HTTP Status: " + response.status + " " + response.statusText + "\n\n" + errorText;
-                    return;
+                    throw new Error(`HTTP ${response.status} ${response.statusText}: ${errorText}`);
                 }
                 const data = await response.json();
+                if (data.status === "error") {
+                    throw new Error(data.error || "Unknown error from Azure Function.");
+                }
+
+                renderBarChart(data.average_macronutrients);
+                renderScatterChart(data.top_protein_recipes);
+                renderHeatmap(data.average_macronutrients);
+                renderPieChart(data.diet_distribution);
+                updateMetaBar(data);
+
+                status.classList.add("hidden");
+
+                container.classList.remove("hidden");
                 output.textContent = JSON.stringify(data, null, 2);
             } catch (err) {
-                output.textContent = "Connection Error: " + err.message
+                status.textContent = "Failed to load dashboard data: " + err.message;
+                status.classList.remove("hidden", "text-gray-600");
+                status.classList.add("text-red-600");
             }
-        });
+        }
+
+        document.getElementById("btnInsights").addEventListener("click", loadDashboard);
+        loadDashboard();
     </script>
 </body>
 

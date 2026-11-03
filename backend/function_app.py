@@ -46,7 +46,7 @@ def get_nutrition_insights(req: func.HttpRequest) -> func.HttpResponse:
         top_protein = (
             df.sort_values("Protein(g)", ascending=False)
             .groupby("Diet_type")
-            .head(5)[["Diet_type", "Recipe_name", "Protein(g)"]]
+            .head(5)[["Diet_type", "Recipe_name", "Cuisine_type", "Protein(g)"]]
         )
 
         highest_protein_diet = avg_macros.set_index("Diet_type")["Protein(g)"].idxmax()
