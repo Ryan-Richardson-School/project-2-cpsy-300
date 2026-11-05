@@ -80,14 +80,13 @@
         <section class="mb-8">
             <h2 class="text-2xl font-semibold mb-4">Filters and Data Interaction</h2>
             <div class="flex flex-wrap gap-4">
-                <input type="text" placeholder="Search by Diet Type" class="p-2 border rounded w-full sm:w-auto">
-                <select class="p-2 border rounded w-full sm:w-auto">
+                <input type="text" id="searchInput" placeholder="Search by Diet Type"
+                    class="p-2 border rounded w-full sm:w-auto">
+                <select id="dietFilterSelect" class="p-2 border rounded w-full sm:w-auto">
                     <option value="all">All Diet Types</option>
-                    <option value="vegan">Vegan</option>
-                    <option value="keto">Keto</option>
-                    <!-- Add more options -->
                 </select>
             </div>
+            <p id="filterStatus" class="hidden text-sm text-red-600 mt-2">No diet types match the current filter.</p>
         </section>
 
         <section class="mb-8">
@@ -140,6 +139,7 @@
         let barChartInstance = null;
         let scatterChartInstance = null;
         let pieChartInstance = null;
+        let lastData = null; // full, unfiltered API response, cached for client-side filtering
 
         // Bar chart: average macronutrients (Protein/Carbs/Fat) per diet type
         function renderBarChart(avgMacros) {
@@ -257,6 +257,55 @@
             document.getElementById("metaLastRefreshed").textContent = new Date().toLocaleTimeString();
         }
 
+        // Fill the diet-type dropdown with the diet types actually present in the data
+        function populateDietFilterOptions(data) {
+            const select = document.getElementById("dietFilterSelect");
+            const existing = new Set(Array.from(select.options).map(o => o.value));
+
+            Object.keys(data.diet_distribution).sort().forEach(dietType => {
+                if (existing.has(dietType)) return;
+                const option = document.createElement("option");
+                option.value = dietType;
+                option.textContent = dietType.charAt(0).toUpperCase() + dietType.slice(1);
+                select.appendChild(option);
+            });
+        }
+
+        // A diet type passes the current filter if it matches the dropdown selection
+        // (or "all") AND contains the search text (case-insensitive)
+        function dietPassesFilter(dietType, selectedDiet, searchText) {
+            const matchesDropdown = selectedDiet === "all" || dietType === selectedDiet;
+            const matchesSearch = !searchText || dietType.toLowerCase().includes(searchText);
+            return matchesDropdown && matchesSearch;
+        }
+
+        // Re-render all four charts using only diet types that pass the current filter
+        function applyFilters() {
+            if (!lastData) return;
+
+            const selectedDiet = document.getElementById("dietFilterSelect").value;
+            const searchText = document.getElementById("searchInput").value.trim().toLowerCase();
+            const passes = dietType => dietPassesFilter(dietType, selectedDiet, searchText);
+
+            const filteredAvgMacros = lastData.average_macronutrients.filter(d => passes(d.Diet_type));
+            const filteredTopProtein = lastData.top_protein_recipes.filter(r => passes(r.Diet_type));
+            const filteredDietDistribution = Object.fromEntries(
+                Object.entries(lastData.diet_distribution).filter(([dietType]) => passes(dietType))
+            );
+
+            const filterStatus = document.getElementById("filterStatus");
+            if (filteredAvgMacros.length === 0) {
+                filterStatus.classList.remove("hidden");
+                return; // keep the last valid charts on screen rather than rendering empty ones
+            }
+            filterStatus.classList.add("hidden");
+
+            renderBarChart(filteredAvgMacros);
+            renderScatterChart(filteredTopProtein);
+            renderHeatmap(filteredAvgMacros);
+            renderPieChart(filteredDietDistribution);
+        }
+
         async function loadDashboard() {
             const status = document.getElementById("dashboardStatus");
             const container = document.getElementById("outputContainer");
@@ -277,10 +326,9 @@
                     throw new Error(data.error || "Unknown error from Azure Function.");
                 }
 
-                renderBarChart(data.average_macronutrients);
-                renderScatterChart(data.top_protein_recipes);
-                renderHeatmap(data.average_macronutrients);
-                renderPieChart(data.diet_distribution);
+                lastData = data;
+                populateDietFilterOptions(data);
+                applyFilters();
                 updateMetaBar(data);
 
                 status.classList.add("hidden");
@@ -295,6 +343,8 @@
         }
 
         document.getElementById("btnInsights").addEventListener("click", loadDashboard);
+        document.getElementById("searchInput").addEventListener("input", applyFilters);
+        document.getElementById("dietFilterSelect").addEventListener("change", applyFilters);
         loadDashboard();
     </script>
 </body>
