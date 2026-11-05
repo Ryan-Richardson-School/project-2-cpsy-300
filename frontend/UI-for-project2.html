@@ -95,8 +95,10 @@
                 <button id="btnInsights"
                     class="bg-blue-600 text-white py-2 px-4 rounded hover:bg-blue-700 font-medium">Refresh
                     Dashboard Data</button>
-                <button class="bg-green-600 text-white py-2 px-4 rounded">Get Recipes</button>
-                <button class="bg-purple-600 text-white py-2 px-4 rounded">Get Clusters</button>
+                <button id="btnGetRecipes"
+                    class="bg-green-600 text-white py-2 px-4 rounded hover:bg-green-700 font-medium">Get Recipes</button>
+                <button class="bg-purple-600 text-white py-2 px-4 rounded opacity-60 cursor-not-allowed" disabled
+                    title="Clustering analysis is not implemented yet">Get Clusters</button>
             </div>
 
             <!-- Connection Test Output Box -->
@@ -107,13 +109,25 @@
             </div>
         </section>
 
+        <section class="mb-8">
+            <h2 class="text-2xl font-semibold mb-4">Recipe Results</h2>
+            <div class="flex flex-wrap gap-4 mb-4">
+                <input type="text" id="recipeSearchInput" placeholder="Search by recipe name"
+                    class="p-2 border rounded w-full sm:w-auto">
+            </div>
+            <p id="recipesStatus" class="text-sm text-gray-600 mb-4">Click "Get Recipes" to load results (honors the
+                diet type filter above and the recipe name search below).</p>
+            <div id="recipesTableContainer" class="bg-white shadow-lg rounded-lg overflow-x-auto hidden"></div>
+        </section>
+
         <section>
             <h2 class="text-2xl font-semibold mb-4">Pagination</h2>
-            <div class="flex justify-center gap-2 mt-4">
-                <button class="px-3 py-1 bg-gray-300 rounded hover:bg-gray-400">Previous</button>
-                <button class="px-3 py-1 bg-blue-600 text-white rounded">1</button>
-                <button class="px-3 py-1 bg-gray-300 rounded hover:bg-gray-400">2</button>
-                <button class="px-3 py-1 bg-gray-300 rounded hover:bg-gray-400">Next</button>
+            <div class="flex items-center justify-center gap-4 mt-4">
+                <button id="btnPrevPage" class="px-3 py-1 bg-gray-300 rounded hover:bg-gray-400 disabled:opacity-50"
+                    disabled>Previous</button>
+                <span id="paginationLabel" class="text-sm text-gray-700">No recipes loaded yet.</span>
+                <button id="btnNextPage" class="px-3 py-1 bg-gray-300 rounded hover:bg-gray-400 disabled:opacity-50"
+                    disabled>Next</button>
             </div>
         </section>
     </main>
@@ -124,7 +138,10 @@
 
     <!-- Dashboard Data + Chart Rendering Script -->
     <script>
-        const API_URL = "https://project2functionappcpsy200-eefqf8ebhhc0bdgt.canadacentral-01.azurewebsites.net/api/nutrition";
+        const API_BASE = "https://project2functionappcpsy200-eefqf8ebhhc0bdgt.canadacentral-01.azurewebsites.net/api";
+        const NUTRITION_API_URL = API_BASE + "/nutrition";
+        const RECIPES_API_URL = API_BASE + "/recipes";
+        const RECIPES_PAGE_SIZE = 10;
 
         // Consistent color per diet type across all charts
         const PALETTE = ["#2563eb", "#16a34a", "#dc2626", "#d97706", "#7c3aed", "#0891b2", "#db2777"];
@@ -140,6 +157,9 @@
         let scatterChartInstance = null;
         let pieChartInstance = null;
         let lastData = null; // full, unfiltered API response, cached for client-side filtering
+        let recipesPage = 1;
+        let recipesTotalPages = 1;
+        let recipesLoaded = false; // becomes true after the first successful "Get Recipes" click
 
         // Bar chart: average macronutrients (Protein/Carbs/Fat) per diet type
         function renderBarChart(avgMacros) {
@@ -304,6 +324,97 @@
             renderScatterChart(filteredTopProtein);
             renderHeatmap(filteredAvgMacros);
             renderPieChart(filteredDietDistribution);
+
+            // Keep the recipe list in sync with the active filters, if it's already been loaded
+            if (recipesLoaded) {
+                loadRecipes(1);
+            }
+        }
+
+        // Build the /recipes query string: diet type comes from the shared dropdown,
+        // while recipe-name search uses its own dedicated input (distinct from the
+        // diet-type search box above, which only affects the charts)
+        function buildRecipesUrl(page) {
+            const params = new URLSearchParams();
+            const selectedDiet = document.getElementById("dietFilterSelect").value;
+            const recipeSearchText = document.getElementById("recipeSearchInput").value.trim();
+
+            if (selectedDiet && selectedDiet !== "all") params.set("diet_type", selectedDiet);
+            if (recipeSearchText) params.set("search", recipeSearchText);
+            params.set("page", page);
+            params.set("page_size", RECIPES_PAGE_SIZE);
+
+            return `${RECIPES_API_URL}?${params.toString()}`;
+        }
+
+        function renderRecipesTable(recipes) {
+            const container = document.getElementById("recipesTableContainer");
+
+            if (recipes.length === 0) {
+                container.innerHTML = '<p class="p-4 text-sm text-gray-600">No recipes found for the current filters.</p>';
+                return;
+            }
+
+            let html = '<table class="w-full text-sm text-left">';
+            html += '<thead class="bg-gray-100"><tr>' +
+                '<th class="p-2">Diet Type</th><th class="p-2">Recipe Name</th><th class="p-2">Cuisine Type</th>' +
+                '<th class="p-2">Protein (g)</th><th class="p-2">Carbs (g)</th><th class="p-2">Fat (g)</th></tr></thead><tbody>';
+
+            recipes.forEach(r => {
+                html += `<tr class="border-t">
+                    <td class="p-2">${r.Diet_type}</td>
+                    <td class="p-2">${r.Recipe_name}</td>
+                    <td class="p-2">${r.Cuisine_type ?? "-"}</td>
+                    <td class="p-2">${r["Protein(g)"]}</td>
+                    <td class="p-2">${r["Carbs(g)"]}</td>
+                    <td class="p-2">${r["Fat(g)"]}</td>
+                </tr>`;
+            });
+
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        function updatePaginationControls(data) {
+            recipesPage = data.page;
+            recipesTotalPages = data.total_pages;
+
+            document.getElementById("paginationLabel").textContent =
+                `Page ${data.page} of ${data.total_pages} (${data.total_records} recipes)`;
+            document.getElementById("btnPrevPage").disabled = data.page <= 1;
+            document.getElementById("btnNextPage").disabled = data.page >= data.total_pages;
+        }
+
+        async function loadRecipes(page) {
+            const status = document.getElementById("recipesStatus");
+            const tableContainer = document.getElementById("recipesTableContainer");
+
+            status.textContent = "Loading recipes...";
+            status.classList.remove("hidden", "text-red-600");
+            status.classList.add("text-gray-600");
+
+            try {
+                const response = await fetch(buildRecipesUrl(page));
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status} ${response.statusText}: ${errorText}`);
+                }
+                const data = await response.json();
+                if (data.status === "error") {
+                    throw new Error(data.error || "Unknown error from Azure Function.");
+                }
+
+                recipesLoaded = true;
+                renderRecipesTable(data.recipes);
+                updatePaginationControls(data);
+
+                tableContainer.classList.remove("hidden");
+                status.classList.add("hidden");
+            } catch (err) {
+                status.textContent = "Failed to load recipes: " + err.message;
+                status.classList.remove("hidden", "text-gray-600");
+                status.classList.add("text-red-600");
+            }
         }
 
         async function loadDashboard() {
@@ -316,7 +427,7 @@
             status.classList.add("text-gray-600");
 
             try {
-                const response = await fetch(API_URL);
+                const response = await fetch(NUTRITION_API_URL);
                 if (!response.ok) {
                     const errorText = await response.text();
                     throw new Error(`HTTP ${response.status} ${response.statusText}: ${errorText}`);
@@ -345,6 +456,22 @@
         document.getElementById("btnInsights").addEventListener("click", loadDashboard);
         document.getElementById("searchInput").addEventListener("input", applyFilters);
         document.getElementById("dietFilterSelect").addEventListener("change", applyFilters);
+        document.getElementById("btnGetRecipes").addEventListener("click", () => loadRecipes(1));
+        document.getElementById("btnPrevPage").addEventListener("click", () => {
+            if (recipesPage > 1) loadRecipes(recipesPage - 1);
+        });
+        document.getElementById("btnNextPage").addEventListener("click", () => {
+            if (recipesPage < recipesTotalPages) loadRecipes(recipesPage + 1);
+        });
+
+        // Debounce the recipe-name search so it doesn't hit the API on every keystroke
+        let recipeSearchDebounce = null;
+        document.getElementById("recipeSearchInput").addEventListener("input", () => {
+            if (!recipesLoaded) return; // nothing to re-filter until "Get Recipes" has been clicked once
+            clearTimeout(recipeSearchDebounce);
+            recipeSearchDebounce = setTimeout(() => loadRecipes(1), 300);
+        });
+
         loadDashboard();
     </script>
 </body>
