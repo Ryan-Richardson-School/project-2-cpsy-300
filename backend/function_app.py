@@ -166,3 +166,124 @@ def get_recipes(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="application/json"
         )
 
+
+@app.route(route="clusters")
+def get_clusters(req: func.HttpRequest) -> func.HttpResponse:
+    """Nutritional profile clustering (rule-based): Groups recipes into 4 distinct clusters based on caloric macronutrient dominance."""
+    start_time = time.time()
+
+    try:
+        # 1. Load the cleaned DataFrame from Azure Blob Storage
+        df = _load_diet_dataframe()
+
+        # 2. Convert macronutrient grams to calories (Protein: 4 kcal/g, Carbs: 4 kcal/g, Fat: 9 kcal/g)
+        protein_cal = df["Protein(g)"] * 4
+        carbs_cal = df["Carbs(g)"] * 4
+        fat_cal = df["Fat(g)"] * 9
+        total_cal = (protein_cal + carbs_cal + fat_cal).replace(0, 1)  # avoid division by zero
+
+        # 3. Calculate percentage of total calories contributed by each macronutrient
+        p_pct = protein_cal / total_cal
+        c_pct = carbs_cal / total_cal
+        f_pct = fat_cal / total_cal
+
+        # 4. Classify recipes into 4 intuitive clusters using calorie-based rules:
+        #    - High-Protein: Protein contributes 40%+ of calories and dominates
+        #    - High-Carb: Carbs contribute 45%+ of calories and dominate
+        #    - High-Fat: Fat contributes 45%+ of calories and dominates
+        #    - Balanced Nutrition: No single macronutrient dominates
+        cluster = pd.Series("Balanced Nutrition", index=df.index)
+        cluster[(p_pct >= 0.40) & (p_pct > c_pct) & (p_pct > f_pct)] = "High-Protein"
+        cluster[(c_pct >= 0.45) & (c_pct > p_pct) & (c_pct > f_pct)] = "High-Carb"
+        cluster[(f_pct >= 0.45) & (f_pct > p_pct) & (f_pct > c_pct)] = "High-Fat"
+        df["Cluster"] = cluster
+        df["p_pct"] = p_pct
+        df["c_pct"] = c_pct
+        df["f_pct"] = f_pct
+
+        # 5. Metadata description and visual theme for each cluster
+        cluster_info = {
+            "High-Protein": {
+                "description": "Recipes where protein contributes 40% or more of total calories. Supports muscle repair, recovery, and satiety.",
+                "color": "#2563eb",
+                "sample_label": "Highest in Protein"
+            },
+            "High-Carb": {
+                "description": "Recipes where carbohydrates contribute 45% or more of total calories. Energy-rich, grain and plant-forward meals.",
+                "color": "#16a34a",
+                "sample_label": "Highest in Carbs"
+            },
+            "High-Fat": {
+                "description": "Recipes where fat contributes 45% or more of total calories. Found across multiple diet types including Keto, Paleo, and Mediterranean.",
+                "color": "#d97706",
+                "sample_label": "Highest in Fat"
+            },
+            "Balanced Nutrition": {
+                "description": "Recipes with no single dominant macronutrient. Everyday meals with moderate protein, carbs, and fat.",
+                "color": "#7c3aed",
+                "sample_label": "Most Balanced"
+            }
+        }
+
+        # 6. Aggregate summary metrics for each cluster
+        clusters_result = []
+        for name, info in cluster_info.items():
+            # Filter DataFrame (df) to keep only recipes belonging to the current cluster
+            grp = df[df["Cluster"] == name]
+            if len(grp) == 0:
+                continue
+
+            # Select the 5 most representative recipes for each cluster
+            if name == "High-Protein":
+                samples = grp.sort_values("p_pct", ascending=False)["Recipe_name"].head(5).tolist()
+            elif name == "High-Carb":
+                samples = grp.sort_values("c_pct", ascending=False)["Recipe_name"].head(5).tolist()
+            elif name == "High-Fat":
+                samples = grp.sort_values("f_pct", ascending=False)["Recipe_name"].head(5).tolist()
+            else:  # Balanced Nutrition: recipes closest to an even 33.3% split across all 3 macros
+                balance_diff = (grp["p_pct"] - 1/3).abs() + (grp["c_pct"] - 1/3).abs() + (grp["f_pct"] - 1/3).abs()
+                samples = grp.loc[balance_diff.nsmallest(5).index, "Recipe_name"].tolist()
+
+            clusters_result.append({
+                "cluster_name": name,
+                "description": info["description"],
+                "color": info["color"],
+                "sample_label": info["sample_label"],
+                "recipe_count": len(grp),
+                "percentage_of_total": round((len(grp) / len(df)) * 100, 1),
+                "avg_macros": {
+                    "Protein(g)": round(grp["Protein(g)"].mean(), 1),
+                    "Carbs(g)": round(grp["Carbs(g)"].mean(), 1),
+                    "Fat(g)": round(grp["Fat(g)"].mean(), 1)
+                },
+                "dominant_diets": grp["Diet_type"].value_counts().head(5).to_dict(),
+                "sample_recipes": samples
+            })
+
+        execution_time = round(time.time() - start_time, 3)
+
+        payload = {
+            "status": "success",
+            "execution_time_seconds": execution_time,
+            "total_recipes_analyzed": len(df),
+            "total_clusters": len(clusters_result),
+            "clusters": clusters_result
+        }
+
+        return func.HttpResponse(
+            json.dumps(payload),
+            status_code=200,
+            mimetype="application/json"
+        )
+
+    except Exception as e:
+        return func.HttpResponse(
+            json.dumps({
+                "status": "error",
+                "error": str(e),
+                "execution_time_seconds": round(time.time() - start_time, 3)
+            }),
+            status_code=500,
+            mimetype="application/json"
+        )
+

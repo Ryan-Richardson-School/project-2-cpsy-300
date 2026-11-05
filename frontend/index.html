@@ -97,8 +97,8 @@
                     Dashboard Data</button>
                 <button id="btnGetRecipes"
                     class="bg-green-600 text-white py-2 px-4 rounded hover:bg-green-700 font-medium">Get Recipes</button>
-                <button class="bg-purple-600 text-white py-2 px-4 rounded opacity-60 cursor-not-allowed" disabled
-                    title="Clustering analysis is not implemented yet">Get Clusters</button>
+                <button id="btnGetClusters"
+                    class="bg-purple-600 text-white py-2 px-4 rounded hover:bg-purple-700 font-medium">Get Clusters</button>
             </div>
 
             <!-- Connection Test Output Box -->
@@ -107,6 +107,13 @@
                 <pre id="apiOutput"
                     class="p-4 bg-gray-900 text-green-400 rounded-lg overflow-x-auto text-xs font-mono"></pre>
             </div>
+        </section>
+
+        <!-- Clusters Section -->
+        <section id="clustersSection" class="mb-8 hidden">
+            <h2 class="text-2xl font-semibold mb-4">Nutritional Clusters Analysis</h2>
+            <p id="clustersStatus" class="text-sm text-gray-600 mb-4">Grouping recipes by caloric macronutrient dominance (Protein, Carbs, Fat).</p>
+            <div id="clustersContainer" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6"></div>
         </section>
 
         <section class="mb-8">
@@ -141,6 +148,7 @@
         const API_BASE = "https://project2functionappcpsy200-eefqf8ebhhc0bdgt.canadacentral-01.azurewebsites.net/api";
         const NUTRITION_API_URL = API_BASE + "/nutrition";
         const RECIPES_API_URL = API_BASE + "/recipes";
+        const CLUSTERS_API_URL = API_BASE + "/clusters";
         const RECIPES_PAGE_SIZE = 10;
 
         // Consistent color per diet type across all charts
@@ -453,10 +461,115 @@
             }
         }
 
+        // Render the 4 nutritional cluster cards with badges and macro breakdowns
+        function renderClusters(clusters) {
+            const container = document.getElementById("clustersContainer");
+            container.innerHTML = "";
+
+            clusters.forEach(c => {
+                const card = document.createElement("div");
+                card.className = "bg-white p-5 shadow-lg rounded-lg border-t-4 flex flex-col justify-between";
+                card.style.borderTopColor = c.color || "#7c3aed";
+
+                const dietsList = Object.entries(c.dominant_diets || {})
+                    .map(([diet, count]) => `<span class="bg-gray-100 text-gray-700 text-xs px-2 py-0.5 rounded">${diet} (${count})</span>`)
+                    .join(" ");
+
+                const sampleList = (c.sample_recipes || [])
+                    .map(r => `<li class="truncate text-xs text-gray-600 list-disc list-inside">${r}</li>`)
+                    .join("");
+
+                card.innerHTML = `
+                    <div>
+                        <div class="flex items-center justify-between mb-2">
+                            <h3 class="font-bold text-gray-800 text-sm md:text-base">${c.cluster_name}</h3>
+                            <span class="text-xs font-semibold px-2 py-0.5 rounded" style="background-color: ${c.color}20; color: ${c.color};">
+                                ${c.recipe_count} recipes (${c.percentage_of_total}%)
+                            </span>
+                        </div>
+                        <p class="text-xs text-gray-500 mb-3">${c.description}</p>
+                        
+                        <div class="bg-gray-50 p-2.5 rounded-lg mb-3">
+                            <p class="text-xs font-semibold text-gray-600 mb-1">Average Macronutrients:</p>
+                            <div class="grid grid-cols-3 gap-1 text-center text-xs">
+                                <div class="bg-blue-50 text-blue-700 py-1 rounded">
+                                    <span class="block font-bold">${c.avg_macros["Protein(g)"]}g</span>
+                                    <span class="text-[10px] text-gray-500">Protein</span>
+                                </div>
+                                <div class="bg-green-50 text-green-700 py-1 rounded">
+                                    <span class="block font-bold">${c.avg_macros["Carbs(g)"]}g</span>
+                                    <span class="text-[10px] text-gray-500">Carbs</span>
+                                </div>
+                                <div class="bg-yellow-50 text-yellow-700 py-1 rounded">
+                                    <span class="block font-bold">${c.avg_macros["Fat(g)"]}g</span>
+                                    <span class="text-[10px] text-gray-500">Fat</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <p class="text-xs font-semibold text-gray-600 mb-1">Diets in Cluster:</p>
+                            <div class="flex flex-wrap gap-1">${dietsList}</div>
+                        </div>
+                    </div>
+
+                    <div class="border-t pt-2 mt-2">
+                        <p class="text-xs font-semibold text-gray-600 mb-1">${c.sample_label || "Sample Recipes"}:</p>
+                        <ul class="space-y-0.5">${sampleList}</ul>
+                    </div>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        async function loadClusters() {
+            const section = document.getElementById("clustersSection");
+            const status = document.getElementById("clustersStatus");
+            const container = document.getElementById("outputContainer");
+            const output = document.getElementById("apiOutput");
+
+            section.classList.remove("hidden");
+            status.textContent = "Analyzing recipe clusters from Azure Function...";
+            status.classList.remove("text-red-600");
+            status.classList.add("text-gray-600");
+
+            try {
+                const response = await fetch(CLUSTERS_API_URL);
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP ${response.status} ${response.statusText}: ${errorText}`);
+                }
+                const data = await response.json();
+                if (data.status === "error") {
+                    throw new Error(data.error || "Unknown error from Azure Function.");
+                }
+
+                status.textContent = `Identified ${data.total_clusters} distinct clusters across ${data.total_recipes_analyzed} recipes in ${data.execution_time_seconds}s.`;
+                renderClusters(data.clusters);
+
+                // Update execution time badge in meta bar
+                if (data.execution_time_seconds) {
+                    document.getElementById("metaExecutionTime").textContent = data.execution_time_seconds + "s";
+                }
+
+                // Show raw JSON in the API response box
+                container.classList.remove("hidden");
+                output.textContent = JSON.stringify(data, null, 2);
+
+                // Smooth scroll to the clusters section
+                section.scrollIntoView({ behavior: "smooth" });
+            } catch (err) {
+                status.textContent = "Failed to load clusters: " + err.message;
+                status.classList.remove("text-gray-600");
+                status.classList.add("text-red-600");
+            }
+        }
+
         document.getElementById("btnInsights").addEventListener("click", loadDashboard);
         document.getElementById("searchInput").addEventListener("input", applyFilters);
         document.getElementById("dietFilterSelect").addEventListener("change", applyFilters);
         document.getElementById("btnGetRecipes").addEventListener("click", () => loadRecipes(1));
+        document.getElementById("btnGetClusters").addEventListener("click", loadClusters);
         document.getElementById("btnPrevPage").addEventListener("click", () => {
             if (recipesPage > 1) loadRecipes(recipesPage - 1);
         });
